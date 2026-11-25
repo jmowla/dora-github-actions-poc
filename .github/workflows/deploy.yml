@@ -1,0 +1,77 @@
+name: Datadog DORA PoC
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Send the deployment event to Datadog
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dora-poc
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Deploy to the simulated target
+        id: deploy
+        run: |
+          echo "started_at=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
+          cp health.txt "$RUNNER_TEMP/deployed-health.txt"
+          echo "finished_at=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
+
+      - name: Record deployment
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          DD_API_KEY: ${{ inputs.publish && secrets.DD_API_KEY || '' }}
+          DD_SITE: ${{ vars.DD_SITE || 'datadoghq.com' }}
+          DORA_SERVICE: ${{ vars.DORA_SERVICE || 'dora-github-actions-poc' }}
+          DORA_ENV: ${{ vars.DORA_ENV || 'dora-poc' }}
+          STARTED_AT: ${{ steps.deploy.outputs.started_at }}
+          FINISHED_AT: ${{ steps.deploy.outputs.finished_at }}
+        run: |
+          payload=$(jq -n \
+            --arg id "github-${GITHUB_REPOSITORY_ID}-${GITHUB_RUN_ID}" \
+            --arg service "$DORA_SERVICE" \
+            --arg env "$DORA_ENV" \
+            --arg sha "$GITHUB_SHA" \
+            --arg repository_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --argjson started_at "$STARTED_AT" \
+            --argjson finished_at "$FINISHED_AT" \
+            '{data: {attributes: {
+              id: $id, service: $service, env: $env, version: $sha,
+              started_at: $started_at, finished_at: $finished_at,
+              git: {commit_sha: $sha, repository_url: $repository_url}
+            }}}')
+
+          if [[ "$PUBLISH" != true ]]; then
+            printf '%s\n' "$payload"
+            exit 0
+          fi
+
+          : "${DD_API_KEY:?Set the DD_API_KEY Actions secret to publish deployments}"
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            --header "DD-API-KEY: $DD_API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data-binary "$payload" \
+            "https://api.${DD_SITE}/api/v2/dora/deployment"
+
+      - name: Check deployed health
+        run: |
+          if [[ "$(cat "$RUNNER_TEMP/deployed-health.txt")" != ok ]]; then
+            echo "::error::The simulated service is unhealthy after deployment"
+            exit 1
+          fi
+          echo "The simulated service is healthy"
