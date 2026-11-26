@@ -6,7 +6,7 @@ on:
       publish:
         description: Send the deployment event to Datadog
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
