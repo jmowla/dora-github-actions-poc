@@ -20,10 +20,18 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      DD_SITE: ${{ vars.DD_SITE || 'datadoghq.com' }}
+      DORA_SERVICE: ${{ vars.DORA_SERVICE || 'dora-github-actions-poc' }}
+      DORA_ENV: ${{ vars.DORA_ENV || 'dora-poc' }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Install Datadog CLI
+        if: inputs.publish
+        run: npm install --prefix "$RUNNER_TEMP/datadog-cli" --no-audit --no-fund @datadog/datadog-ci@5.29.0
 
       - name: Deploy to the simulated target
         id: deploy
@@ -33,12 +41,10 @@ jobs:
           echo "finished_at=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
 
       - name: Record deployment
+        id: record
         env:
           PUBLISH: ${{ inputs.publish }}
           DD_API_KEY: ${{ inputs.publish && secrets.DD_API_KEY || '' }}
-          DD_SITE: ${{ vars.DD_SITE || 'datadoghq.com' }}
-          DORA_SERVICE: ${{ vars.DORA_SERVICE || 'dora-github-actions-poc' }}
-          DORA_ENV: ${{ vars.DORA_ENV || 'dora-poc' }}
           STARTED_AT: ${{ steps.deploy.outputs.started_at }}
           FINISHED_AT: ${{ steps.deploy.outputs.finished_at }}
         run: |
@@ -75,3 +81,12 @@ jobs:
             exit 1
           fi
           echo "The simulated service is healthy"
+
+      - name: Mark the CI job as a deployment
+        if: ${{ !cancelled() && inputs.publish && steps.record.outcome == 'success' }}
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+          DD_BETA_COMMANDS_ENABLED: '1'
+        run: |
+          "$RUNNER_TEMP/datadog-cli/node_modules/.bin/datadog-ci" deployment mark \
+            --service "$DORA_SERVICE" --env "$DORA_ENV" --revision "$GITHUB_SHA"
